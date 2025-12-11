@@ -9,7 +9,7 @@ bikeTest <- vroom("test.csv")
 
 bikeTrain_clean <- bikeTrain |>
   select(-casual, -registered) |>
-  mutate(count = log(count))
+  mutate(count = log1p(count))
 
 
 bike_recipe <- recipe(count ~ ., data = bikeTrain_clean) |>
@@ -390,3 +390,59 @@ kaggle_dbot <- dbot |>
   mutate(count = pmax(0, exp(count))) |> 
   mutate(datetime = as.character(format(datetime)))
 vroom_write(x=kaggle_dbot, file="./Data_Robot.csv", delim=",")
+
+
+# Final Project Update
+bike_recipe_final <- recipe(count ~ ., data = bikeTrain_clean) |>
+  step_mutate(weather = ifelse(weather == 4, 3, weather),
+              weekend = ifelse(wday(datetime) %in% c(1,7), 1, 0),
+              rush_hour = ifelse(hour(datetime) %in% c(7:9, 16:19), 1, 0)) |>
+  step_date(datetime, features = c('month', 'year', 'dow')) |>
+  step_time(datetime, features = c('hour')) |>
+  step_rm(datetime) |>
+  step_interact(terms = ~ temp:humidity + temp:windspeed + season:humidity) |>
+  step_poly(temp, humidity, degree = 2) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors())
+
+
+bike_prep_final <- prep(bike_recipe_final)
+bike_baked_final <- bake(bike_prep_final, new_data = bikeTrain_clean)
+
+
+
+# Using stacking with h2o ai
+library(agua)
+
+
+Sys.setenv(JAVA_HOME = "C:/Program Files/Eclipse Adoptium/jdk-25.0.0.36-hotspot")
+Sys.setenv(PATH = paste(Sys.getenv("JAVA_HOME"), "bin", Sys.getenv("PATH"), sep=";"))
+
+
+h2o::h2o.init()
+
+
+auto_model_final <- auto_ml() |>
+  set_engine('h2o', max_runtime_secs = 180, max_models = 6)|>
+  set_mode('regression')
+
+
+automl_wf_final <- workflow() |>
+  add_recipe(bike_recipe_final) |>
+  add_model(auto_model_final) |>
+  fit(data = bikeTrain_clean)
+
+
+auto_preds_final <- predict(automl_wf_final, new_data = bikeTest)
+auto_preds_final <- exp(auto_preds_final)
+
+
+auto_submission_final <- auto_preds_final |>
+  bind_cols(bikeTest) |>
+  select(datetime, .pred) |>
+  rename(count = .pred) |>
+  mutate(count = pmax(0, count)) |>
+  mutate(datetime = as.character(format(datetime)))
+
+
+vroom_write(x = auto_submission_final, file = "./FinalProject.csv", delim = ",")
